@@ -1,0 +1,167 @@
+## DICCIONARIO DE VARIABLES:
+
+```{r}
+diccionario <- tibble::tribble(
+  ~variable,               ~descripcion,                                                   ~unidad_o_valores,
+  "Laguna",                "Identificador de la laguna muestreada",                       "Categoría",
+  "Fecha",                 "Fecha o campaña de muestreo",                                "Categoría/fecha",
+  "Peces",                 "Indica si se registró presencia de peces",                   "Si / No",
+  "Fraccion",              "Fracción de zooplancton analizada",                          "Macrozooplancton / Microzooplancton",
+  "Grupo",                 "Grupo taxonómico al que pertenece el taxón",                "Categoría",
+  "Tamaño_grupo",          "Clasificación del tamaño del grupo",                         "Categoría; NA si no corresponde",
+  "Taxon",                 "Taxón identificado en la muestra",                          "Texto",
+  "Conteo_sub1",           "Individuos contados en la primera submuestra",              "Individuos",
+  "Conteo_sub2",           "Individuos contados en la segunda submuestra",               "Individuos",
+  "Conteo_sub3",           "Individuos contados en la tercera submuestra",               "Individuos",
+  "Vol_dilucion_ml",       "Volumen total de la muestra diluida",                        "ml",
+  "Vol_submuestras_ml",    "Volumen examinado en cada submuestra",                       "ml",
+  "N_submuestras",         "Cantidad de submuestras examinadas",                         "Número",
+  "Conteo_total",          "Suma de los individuos contados en las submuestras",         "Individuos",
+  "Vol_filtrado_l",        "Volumen de agua original que se filtró",                     "L",
+  "Vol_examinado_ml",      "Volumen total examinado: submuestras por volumen individual","ml",
+  "Fraccion_examinada",    "Proporción de la muestra diluida que se examinó",             "Proporción",
+  "Vol_efectivo_l",        "Litros de agua original representados en lo examinado",       "L",
+  "Densidad_ind_l",        "Conteo total dividido por el volumen efectivo",               "ind/L"
+)
+
+
+
+write.csv(
+  diccionario,
+  "diccionario_variables.csv",
+  row.names = FALSE,
+  fileEncoding = "UTF-8"
+)
+print(diccionario, n = Inf, width = Inf)
+```
+
+---------------------------------------------------------------------------------------------------------------------------------------
+## MODELO RIQUEZA 
+library(dplyr)
+library(ggplot2)
+
+library(glmmTMB)
+
+riqueza_model <- riqueza %>%
+  mutate(
+    Laguna = factor(Laguna),
+    Peces = factor(Peces, levels = c("No", "Si")),
+    Fecha = factor(
+      Fecha,
+      levels = c("Diciembre_2023", "Febrero_2024")
+    )
+  )
+
+modelo_riqueza <- glmmTMB(
+  Riqueza ~ Peces * Fecha + (1 | Laguna),
+  family = poisson(link = "log"),
+  data = riqueza_model
+)
+
+summary(modelo_riqueza)
+
+riqueza
+```
+----
+# PLOTS:
+```{r, fig.width=12, fig.height=8, out.width="100%"}
+residuos <- DHARMa::simulateResiduals(modelo_riqueza)
+
+par(mfrow = c(2, 2))
+library(DHARMa)
+plotResiduals(residuos, form = fitted(modelo_riqueza))
+plotQQunif(residuos)
+hist(residuos$scaledResiduals,
+     main = "Distribución de residuos",
+     xlab = "Residuos escalados")
+plotResiduals(residuos, form = riqueza_model$Fecha)
+
+par(mfrow = c(1, 1))
+```
+---
+## DISPERSION
+
+
+
+---------------------------------------------------------------------------------------------------------------------
+
+## ABUNDANCIA:
+```{r}
+library(glmmTMB)
+abundancia <- datos_desc %>%
+  filter(
+    !is.na(Conteo_total),
+    !is.na(Vol_efectivo_l),
+    Vol_efectivo_l > 0
+  ) %>%
+  group_by(Laguna, Fecha, Peces, Fraccion, Grupo) %>%
+  summarise(
+    conteo = sum(Conteo_total),
+    Vol_efectivo_l = first(Vol_efectivo_l),
+    .groups = "drop"
+  )
+
+modelo_abund_pois <- glmmTMB(
+  conteo ~ Peces * Fecha + Grupo + Fraccion +
+    offset(log(Vol_efectivo_l)) +
+    (1 | Laguna),
+  family = poisson,
+  data = abundancia
+)
+
+modelo_abund_nb <- glmmTMB(
+  conteo ~ Peces * Fecha + Grupo + Fraccion +
+    offset(log(Vol_efectivo_l)) +
+    (1 | Laguna),
+  family = nbinom2,
+  data = abundancia
+)
+```
+
+
+--- DESEMPEÑO
+
+```{r, fig.width=12, fig.height=8, out.width="100%"}
+library(DHARMa)
+
+# Poisson
+res_pois <- simulateResiduals(modelo_abund_pois, n = 1000)
+library(DHARMa)
+par(mfrow = c(2, 2))
+plotResiduals(res_pois, form = fitted(modelo_abund_pois))
+plotQQunif(res_pois)
+hist(res_pois$scaledResiduals,
+     main = "Residuos escalados: Poisson",
+     xlab = "Residuos escalados")
+plotResiduals(res_pois, form = abundancia$Fecha)
+par(mfrow = c(1, 1))
+
+testDispersion(res_pois, plot = FALSE)
+```
+```{r}
+library(DHARMa)
+testDispersion(res_pois, plot = FALSE)
+```
+
+--- AHORA BINOMIAL NEGATIVA (NOS DA MEJOR EN DISPERSION)
+```{r, fig.width=12, fig.height=8, out.width="100%"}
+# Binomial negativa
+library(DHARMa)
+res_nb <- simulateResiduals(modelo_abund_nb, n = 1000)
+library(DHARMa)
+par(mfrow = c(2, 2))
+plotResiduals(res_nb, form = fitted(modelo_abund_nb))
+plotQQunif(res_nb)
+hist(res_nb$scaledResiduals,
+     main = "Residuos escalados: Binomial negativa",
+     xlab = "Residuos escalados")
+plotResiduals(res_nb, form = abundancia$Fecha)
+par(mfrow = c(1, 1))
+
+```
+--- DISPERSION
+```{r}
+library(DHARMa)
+testDispersion(res_nb, plot = FALSE)
+```
+
